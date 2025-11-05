@@ -1,3 +1,6 @@
+docker run -d --restart=unless-stopped -p 80:80 -p 443:443 --privileged rancher/rancher:latest
+
+
 What Went Well (Positives)
 
 These are the successes and achievements from the sprint.
