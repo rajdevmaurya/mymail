@@ -1,0 +1,476 @@
+package com.example.api.exception;
+
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+/**
+ * Global exception handler for REST API
+ * Ensures no stack traces are exposed to clients in production
+ */
+@RestControllerAdvice
+@Slf4j
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleResourceNotFoundException(
+            ResourceNotFoundException ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.NOT_FOUND.value())
+                .error(HttpStatus.NOT_FOUND.getReasonPhrase())
+                .message(ex.getMessage())
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity<ErrorResponse> handleBusinessException(
+            BusinessException ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message(ex.getMessage())
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationException(
+            MethodArgumentNotValidException ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        Map<String, String> fieldErrors = new HashMap<>();
+        ex.getBindingResult().getAllErrors().forEach(error -> {
+            String fieldName = ((FieldError) error).getField();
+            String errorMessage = error.getDefaultMessage();
+            fieldErrors.put(fieldName, errorMessage);
+        });
+
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message("Validation failed")
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .validationErrors(fieldErrors)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolationException(
+            ConstraintViolationException ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        Map<String, String> violations = ex.getConstraintViolations()
+                .stream()
+                .collect(Collectors.toMap(
+                        violation -> violation.getPropertyPath().toString(),
+                        ConstraintViolation::getMessage
+                ));
+
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message("Constraint violation")
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .validationErrors(violations)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message("Malformed JSON request")
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(
+            MethodArgumentTypeMismatchException ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        String message = String.format("Invalid value '%s' for parameter '%s'", 
+                ex.getValue(), ex.getName());
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message(message)
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleGlobalException(
+            Exception ex, WebRequest request) {
+        
+        String errorId = logError(ex, request);
+        
+        // Never expose internal error details to client
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                .error(HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase())
+                .message("An unexpected error occurred. Please contact support with error ID: " + errorId)
+                .path(getRequestPath(request))
+                .errorId(errorId)
+                .build();
+
+        return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    /**
+     * Logs the exception with full stack trace for debugging
+     * Returns a unique error ID for tracking
+     */
+    private String logError(Exception ex, WebRequest request) {
+        String errorId = UUID.randomUUID().toString();
+        String path = getRequestPath(request);
+        
+        log.error("Error ID: {} | Path: {} | Exception: {}", 
+                errorId, path, ex.getClass().getSimpleName(), ex);
+        
+        return errorId;
+    }
+
+    private String getRequestPath(WebRequest request) {
+        return request.getDescription(false).replace("uri=", "");
+    }
+}
+
+/**
+ * Standardized error response structure
+ */
+@lombok.Data
+@lombok.Builder
+@JsonInclude(JsonInclude.Include.NON_NULL)
+class ErrorResponse {
+    
+    @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss")
+    private LocalDateTime timestamp;
+    
+    private int status;
+    private String error;
+    private String message;
+    private String path;
+    private String errorId;
+    
+    // Only included for validation errors
+    private Map<String, String> validationErrors;
+}
+
+
+
+openapi: 3.0.3
+info:
+  title: Secure REST API
+  description: |
+    REST API with secure exception handling - no stack traces exposed.
+    All error responses follow a standardized format with error IDs for tracking.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@example.com
+
+servers:
+  - url: https://api.example.com/api/v1
+    description: Production server
+  - url: https://staging-api.example.com/api/v1
+    description: Staging server
+
+tags:
+  - name: Users
+    description: User management operations
+
+paths:
+  /users/{id}:
+    get:
+      tags:
+        - Users
+      summary: Get user by ID
+      description: Retrieve a user by their unique identifier
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User ID
+          schema:
+            type: string
+            example: "12345"
+      responses:
+        '200':
+          description: User found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                userNotFound:
+                  $ref: '#/components/examples/UserNotFoundError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                internalError:
+                  $ref: '#/components/examples/InternalServerError'
+
+  /users:
+    post:
+      tags:
+        - Users
+      summary: Create new user
+      description: Create a new user in the system
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          description: Bad request - validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+              examples:
+                validationError:
+                  $ref: '#/components/examples/ValidationError'
+                businessError:
+                  $ref: '#/components/examples/BusinessLogicError'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    # Success Response Schemas
+    UserResponse:
+      type: object
+      required:
+        - id
+        - name
+        - email
+      properties:
+        id:
+          type: string
+          description: Unique user identifier
+          example: "12345"
+        name:
+          type: string
+          description: User's full name
+          example: "John Doe"
+        email:
+          type: string
+          format: email
+          description: User's email address
+          example: "john.doe@example.com"
+
+    CreateUserRequest:
+      type: object
+      required:
+        - name
+        - email
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: User's full name
+          example: "John Doe"
+        email:
+          type: string
+          format: email
+          minLength: 5
+          maxLength: 100
+          description: User's email address
+          example: "john.doe@example.com"
+
+    # Error Response Schemas
+    ErrorResponse:
+      type: object
+      required:
+        - timestamp
+        - status
+        - error
+        - message
+        - path
+        - errorId
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp when the error occurred
+          example: "2025-11-13T10:30:00"
+        status:
+          type: integer
+          description: HTTP status code
+          example: 500
+        error:
+          type: string
+          description: HTTP status reason phrase
+          example: "Internal Server Error"
+        message:
+          type: string
+          description: User-friendly error message (never contains stack traces)
+          example: "An unexpected error occurred. Please contact support with error ID: 550e8400-e29b-41d4-a716-446655440000"
+        path:
+          type: string
+          description: Request path that caused the error
+          example: "/api/v1/users/12345"
+        errorId:
+          type: string
+          format: uuid
+          description: Unique error identifier for tracking in logs
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      description: |
+        Standardized error response format. 
+        NOTE: Stack traces are NEVER included in production responses.
+        Use the errorId to correlate with server logs for debugging.
+
+    ValidationErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            validationErrors:
+              type: object
+              additionalProperties:
+                type: string
+              description: Map of field names to validation error messages
+              example:
+                name: "Name is required"
+                email: "Invalid email format"
+      description: |
+        Error response for validation failures.
+        Contains field-level validation errors in addition to standard error fields.
+
+  examples:
+    UserNotFoundError:
+      summary: User not found
+      value:
+        timestamp: "2025-11-13T10:30:00"
+        status: 404
+        error: "Not Found"
+        message: "User not found with identifier: 999"
+        path: "/api/v1/users/999"
+        errorId: "550e8400-e29b-41d4-a716-446655440000"
+
+    InternalServerError:
+      summary: Internal server error
+      value:
+        timestamp: "2025-11-13T10:30:15"
+        status: 500
+        error: "Internal Server Error"
+        message: "An unexpected error occurred. Please contact support with error ID: 660e8400-e29b-41d4-a716-446655440001"
+        path: "/api/v1/users/error"
+        errorId: "660e8400-e29b-41d4-a716-446655440001"
+
+    ValidationError:
+      summary: Validation failure
+      value:
+        timestamp: "2025-11-13T10:30:30"
+        status: 400
+        error: "Bad Request"
+        message: "Validation failed"
+        path: "/api/v1/users"
+        errorId: "770e8400-e29b-41d4-a716-446655440002"
+        validationErrors:
+          name: "Name is required"
+          email: "Invalid email format"
+
+    BusinessLogicError:
+      summary: Business logic error
+      value:
+        timestamp: "2025-11-13T10:30:45"
+        status: 400
+        error: "Bad Request"
+        message: "User with this email already exists"
+        path: "/api/v1/users"
+        errorId: "880e8400-e29b-41d4-a716-446655440003"
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []
